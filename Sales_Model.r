@@ -43,11 +43,12 @@ anova_mod <- rpart(Item_Weight ~ . -Item_Outlet_Sales,
                    na.action=na.omit)
 Item_Weight_pred <- predict(anova_mod, Full_Data[is.na(Full_Data$Item_Weight), ])
 Full_Data$Item_Weight[is.na(Full_Data$Item_Weight)] <- Item_Weight_pred
+Full_Data$Outlet <- Full_Data$Outlet_Identifier
 
 ##### Creating dummy variables #####
 
 Full_Data <- dummy.data.frame(Full_Data, names = c('Outlet_Size','Outlet_Location_Type',
-                                                   'Outlet_Type','Item_Type_Derived'),  sep='_')
+                                                   'Outlet_Type','Item_Type_Derived',"Outlet"),  sep='_')
 
 ##### Feature Engineering #####
 Full_Data <- Full_Data %>%
@@ -56,26 +57,40 @@ Full_Data <- Full_Data %>%
 
 Full_Data <- Full_Data %>%
   group_by(Item_Identifier) %>%
-  dplyr::mutate(Item_ID_Count = n()) 
+  dplyr::mutate(Item_ID_Count = n(),
+                item_visibility_mean_ratio = Item_Visibility/mean(Item_Visibility,na.rm=T),
+                price_ratio = Item_ID_Count/Item_MRP) 
 
 Full_Data <- Full_Data %>%
   mutate(Time_Difference = 2013 - Outlet_Establishment_Year)
 
 ####### Splitting Data in Train and Test Sets ######
 
-Full_Data[,c("Item_Identifier","Item_Type","Outlet_Identifier","Outlet_Establishment_Year")] <- NULL
+Full_Data[,c("Item_Identifier","Outlet_Identifier","Outlet_Establishment_Year","Item_Type")] <- NULL
 train_data <- Full_Data[1:nrow(train_file),]
 test_data <- Full_Data[-(1:nrow(train_file)),]
 test_data$Item_Outlet_Sales <- NULL
-#### Removing Outliers ####
 
-# train_data <- subset(train_data, Item_Outlet_Sales < quantile(train_data$Item_Outlet_Sales,0.75,na.rm = T) + 1.5*IQR(train_data$Item_Outlet_Sales,na.rm = T))
-
+train_sold_items  <- train_data %>%
+  mutate(Items_Sold = round(Item_Outlet_Sales/Item_MRP)) %>%
+  select(-Item_Outlet_Sales)
+train_data$Items_Sold <- train_sold_items$Items_Sold
 #### Building Models ####
+
 control <- trainControl(method = "cv",
                         number = 10,
                         verboseIter = TRUE)
 
+model_gbm_1 <- train(Items_Sold~., 
+                     data=train_sold_items, 
+                     method="gbm", 
+                     trControl=control, 
+                     # preProcess = c("center","scale"),
+                     verbose= TRUE)
+print(model_gbm_1)
+plot(model_gbm_1)
+Items_Sold <- predict(model_gbm_1, test_data)
+test_data <- cbind(test_data,round(Items_Sold))
 # Fit GBM
 modelGbm <- train(Item_Outlet_Sales~., 
                   data=train_data, 
@@ -106,22 +121,22 @@ RF_output <- data.frame(Item_Identifier = test_file$Item_Identifier,
                         Item_Outlet_Sales = RFPred)
 write.csv(RF_output,row.names = FALSE,"~/Documents/Analytics_Vidhya/Sales_Prediction/Sales_Prediction/RF_output.csv")
 
-# Fit parallel random forest
-modelPRF <- train(Item_Outlet_Sales~., 
-                 data=train_data, 
-                 tuneLength = 3,
-                 method = "parRF",
-                 tuneGrid = data.frame(mtry=c(1,2,3,7,9,15)),
-                 trControl = control)
-
-# Print model to console
-print(modelPRF)
-plot(modelPRF)
-PRFPred <- predict(modelPRF, test_data)
-PRF_output <- data.frame(Item_Identifier = test_file$Item_Identifier,
-                        Outlet_Identifier = test_file$Outlet_Identifier,
-                        Item_Outlet_Sales = PRFPred)
-write.csv(PRF_output,row.names = FALSE,"~/Documents/Analytics_Vidhya/Sales_Prediction/Sales_Prediction/PRF_output.csv")
+# # Fit parallel random forest
+# modelPRF <- train(Item_Outlet_Sales~., 
+#                  data=train_data, 
+#                  tuneLength = 3,
+#                  method = "parRF",
+#                  tuneGrid = data.frame(mtry=c(1,2,3,7,9,15)),
+#                  trControl = control)
+# 
+# # Print model to console
+# print(modelPRF)
+# plot(modelPRF)
+# PRFPred <- predict(modelPRF, test_data)
+# PRF_output <- data.frame(Item_Identifier = test_file$Item_Identifier,
+#                         Outlet_Identifier = test_file$Outlet_Identifier,
+#                         Item_Outlet_Sales = PRFPred)
+# write.csv(PRF_output,row.names = FALSE,"~/Documents/Analytics_Vidhya/Sales_Prediction/Sales_Prediction/PRF_output.csv")
 
 
 ## Fit XGBOOST
@@ -171,7 +186,7 @@ Imp[1:15]
 #********************************************************
 
 # Create model_list
-model_list <- list(gbm = modelGbm, rf = modelRF, prf = modelPRF)
+model_list <- list(gbm = modelGbm, rf = modelRF)
 
 # Pass model_list to resamples(): resamples
 resamples <- resamples(model_list)
